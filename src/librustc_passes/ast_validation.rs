@@ -8,7 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-// Sanity check AST before lowering it to HIR
+// Validate AST before lowering it to HIR
 //
 // This pass is supposed to catch things that fit into AST data structures,
 // but not permitted by the language. It runs after expansion when AST is frozen,
@@ -24,11 +24,11 @@ use syntax::errors;
 use syntax::parse::token::{self, keywords};
 use syntax::visit::{self, Visitor};
 
-struct SanityChecker<'a> {
+struct AstValidator<'a> {
     session: &'a Session,
 }
 
-impl<'a> SanityChecker<'a> {
+impl<'a> AstValidator<'a> {
     fn err_handler(&self) -> &errors::Handler {
         &self.session.parse_sess.span_diagnostic
     }
@@ -55,9 +55,21 @@ impl<'a> SanityChecker<'a> {
             err.emit();
         }
     }
+
+    fn check_path(&self, path: &Path, id: NodeId) {
+        if path.global && path.segments.len() > 0 {
+            let ident = path.segments[0].identifier;
+            if token::Ident(ident).is_path_segment_keyword() {
+                self.session.add_lint(
+                    lint::builtin::SUPER_OR_SELF_IN_GLOBAL_PATH, id, path.span,
+                    format!("global paths cannot start with `{}`", ident)
+                );
+            }
+        }
+    }
 }
 
-impl<'a, 'v> Visitor<'v> for SanityChecker<'a> {
+impl<'a, 'v> Visitor<'v> for AstValidator<'a> {
     fn visit_lifetime(&mut self, lt: &Lifetime) {
         if lt.name.as_str() == "'_" {
             self.session.add_lint(
@@ -85,17 +97,15 @@ impl<'a, 'v> Visitor<'v> for SanityChecker<'a> {
     }
 
     fn visit_path(&mut self, path: &Path, id: NodeId) {
-        if path.global && path.segments.len() > 0 {
-            let ident = path.segments[0].identifier;
-            if token::Ident(ident).is_path_segment_keyword() {
-                self.session.add_lint(
-                    lint::builtin::SUPER_OR_SELF_IN_GLOBAL_PATH, id, path.span,
-                    format!("global paths cannot start with `{}`", ident)
-                );
-            }
-        }
+        self.check_path(path, id);
 
         visit::walk_path(self, path)
+    }
+
+    fn visit_path_list_item(&mut self, prefix: &Path, item: &PathListItem) {
+        self.check_path(prefix, item.node.id());
+
+        visit::walk_path_list_item(self, prefix, item)
     }
 
     fn visit_item(&mut self, item: &Item) {
@@ -169,5 +179,5 @@ impl<'a, 'v> Visitor<'v> for SanityChecker<'a> {
 }
 
 pub fn check_crate(session: &Session, krate: &Crate) {
-    visit::walk_crate(&mut SanityChecker { session: session }, krate)
+    visit::walk_crate(&mut AstValidator { session: session }, krate)
 }
